@@ -41,6 +41,7 @@ function ufw-docker--list() {
     local INSTANCE_PORT="${2:-}"
     local PROTO="${3:-}"
     local NETWORK="${4:-}"
+    local SOURCE_ADDR="${5:-}"
     local params_count="$#"
     local _grep_regexp
 
@@ -60,10 +61,17 @@ function ufw-docker--list() {
         _grep_regexp=" ${INSTANCE_PORT}/${PROTO}${NETWORK}"
     fi
 
+    local _source_regexp
+    if [[ -n "${SOURCE_ADDR:-}" ]]; then
+        _source_regexp=" from $(sed 's/[.\/]/\\&/g' <<< "$SOURCE_ADDR")"
+    else
+        _source_regexp="\\( from [^[:blank:]]\\+\\)\\?"
+    fi
+
     local ufw_output
     ufw_output="$(ufw status numbered)"
 
-    grep "# allow ${INSTANCE_NAME}\\(/v6\\)\\?${_grep_regexp}\$" <<< "$ufw_output"
+    grep "# allow ${INSTANCE_NAME}\\(/v6\\)\\?${_grep_regexp}${_source_regexp}\$" <<< "$ufw_output"
 }
 
 function ufw-docker--list-number() {
@@ -156,12 +164,15 @@ function ufw-docker--add-rule() {
     [[ -n "$NETWORK" ]] && {
         comment="$comment ${NETWORK}"
     }
+    [[ "$SOURCE_ADDR" != "any" ]] && {
+        comment="$comment from ${SOURCE_ADDR}"
+    }
     UFW_OPTS+=(comment "$comment")
 
-    if ufw-docker--list "$INSTANCE_NAME" "$PORT" "$PROTO" "$NETWORK" &>/dev/null; then
+    if ufw-docker--list "$INSTANCE_NAME" "$PORT" "$PROTO" "$NETWORK" "$SOURCE_ADDR" &>/dev/null; then
         ufw --dry-run "${UFW_OPTS[@]}" | grep "^Skipping" && return 0
         err "Remove outdated rule."
-        ufw-docker--delete "$INSTANCE_NAME" "$PORT" "$PROTO" "$NETWORK"
+        ufw-docker--delete "$INSTANCE_NAME" "$PORT" "$PROTO" "$NETWORK" "$SOURCE_ADDR"
     fi
     echo ufw "${UFW_OPTS[@]}"
     ufw "${UFW_OPTS[@]}"
@@ -554,10 +565,17 @@ function ufw-docker--reload() {
         local port=""
         local proto=""
         local network=""
+        local source=""
 
+        local skip_next=false
         for ((i=1; i<${#tokens[@]}; i++)); do
             local token="${tokens[i]}"
-            if [[ "$token" =~ ^[0-9]+/(tcp|udp)$ ]]; then
+            if $skip_next; then
+                source="$token"
+                skip_next=false
+            elif [[ "$token" = "from" ]]; then
+                skip_next=true
+            elif [[ "$token" =~ ^[0-9]+/(tcp|udp)$ ]]; then
                 port="${token%/*}"
                 proto="${token#*/}"
             else
@@ -565,9 +583,9 @@ function ufw-docker--reload() {
             fi
         done
 
-        local key="${instance_name}|${port}|${proto}|${network}"
-        echo "Reloading rule for $instance_name ${port}/${proto} $network" >&2
-        if ! (ufw-docker--allow "$instance_name" "$port" "$proto" "$network"); then
+        local key="${instance_name}|${port}|${proto}|${network}|${source}"
+        echo "Reloading rule for $instance_name ${port}/${proto} ${network}${source:+ from $source}" >&2
+        if ! (ufw-docker--allow "$instance_name" "$port" "$proto" "$network" "$source"); then
             echo "Delete unexisting rule for $instance_name ${port}/${proto} $network" >&2
             ufw-docker--delete "$instance_name" "$port" "$proto" "$network"
         fi
@@ -1093,7 +1111,7 @@ case "$ufw_action" in
         INSTANCE_PORT="${INSTANCE_PORT%/*}"
         ;;&
     delete|list)
-        "ufw-docker--$ufw_action" "$INSTANCE_NAME" "$INSTANCE_PORT" "$PROTO" "$NETWORK"
+        "ufw-docker--$ufw_action" "$INSTANCE_NAME" "$INSTANCE_PORT" "$PROTO" "$NETWORK" "$SOURCE_ADDR"
         ;;
     allow)
         "ufw-docker--$ufw_action" "$INSTANCE_NAME" "$INSTANCE_PORT" "$PROTO" "$NETWORK" "$SOURCE_ADDR"
