@@ -82,6 +82,7 @@ function ufw-docker--allow() {
     local INSTANCE_PORT="$2"
     local PROTO="$3"
     local NETWORK="${4:-}"
+    local SOURCE_ADDR="${5:-any}"
     local NETWORK_ADDRESSES PORT_PROTO_LIST PROT_PROTO IP SUFFIX
 
     docker inspect "$INSTANCE_NAME" &>/dev/null ||
@@ -108,7 +109,7 @@ function ufw-docker--allow() {
                     continue
                 fi
                 if [[ "$IP" = *:* ]]; then SUFFIX="/v6"; else SUFFIX=""; fi
-                ufw-docker--add-rule "${INSTANCE_NAME}${SUFFIX}" "$IP" "${PORT_PROTO%/*}" "${PORT_PROTO#*/}" "${INSTANCE_NETWORK}"
+                ufw-docker--add-rule "${INSTANCE_NAME}${SUFFIX}" "$IP" "${PORT_PROTO%/*}" "${PORT_PROTO#*/}" "${INSTANCE_NETWORK}" "${SOURCE_ADDR}"
                 (( ++count ))
             done
         fi
@@ -139,13 +140,14 @@ function ufw-docker--add-rule() {
     local PORT="$3"
     local PROTO="$4"
     local NETWORK="${5:-}"
+    local SOURCE_ADDR="${6:-any}"
 
     declare comment
 
-    echo "allow ${INSTANCE_NAME} ${PORT}/${PROTO} ${NETWORK}"
+    echo "allow ${INSTANCE_NAME} ${PORT}/${PROTO} ${NETWORK}${SOURCE_ADDR:+ from ${SOURCE_ADDR}}"
     typeset -a UFW_OPTS
     UFW_OPTS=(route allow proto "${PROTO}"
-              from any to "$INSTANCE_IP_ADDRESS")
+              from "${SOURCE_ADDR}" to "$INSTANCE_IP_ADDRESS")
     comment="allow ${INSTANCE_NAME}"
     [[ -n "$PORT" ]] && {
         UFW_OPTS+=(port "${PORT}")
@@ -1047,6 +1049,30 @@ case "$ufw_action" in
     list|allow)
         shift || true
 
+        SOURCE_ADDR=""
+        declare -a _positional=()
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --source|--src|-s)
+                    SOURCE_ADDR="${2:?Missing value for $1}"
+                    shift 2
+                    ;;
+                --source=*|--src=*)
+                    SOURCE_ADDR="${1#*=}"
+                    shift
+                    ;;
+                *)
+                    _positional+=("$1")
+                    shift
+                    ;;
+            esac
+        done
+        set -- "${_positional[@]+"${_positional[@]}"}"
+
+        if [[ -n "$SOURCE_ADDR" && ! "$SOURCE_ADDR" =~ ^[0-9a-fA-F:./]+$ ]]; then
+            die "invalid source address syntax: \"$SOURCE_ADDR\"."
+        fi
+
         INSTANCE_ID="${1:?Docker instance name/ID cannot be empty.}"
         INSTANCE_NAME="$(ufw-docker--instance-name "$INSTANCE_ID")"
         shift || true
@@ -1070,7 +1096,7 @@ case "$ufw_action" in
         "ufw-docker--$ufw_action" "$INSTANCE_NAME" "$INSTANCE_PORT" "$PROTO" "$NETWORK"
         ;;
     allow)
-        "ufw-docker--$ufw_action" "$INSTANCE_NAME" "$INSTANCE_PORT" "$PROTO" "$NETWORK"
+        "ufw-docker--$ufw_action" "$INSTANCE_NAME" "$INSTANCE_PORT" "$PROTO" "$NETWORK" "$SOURCE_ADDR"
         ;;
     service|raw-command|add-service-rule|install-service)
         shift || true
